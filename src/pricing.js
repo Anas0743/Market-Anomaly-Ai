@@ -149,6 +149,26 @@ export class PriceRangeEstimator {
     const trimmed = prices.filter((price) => price >= lower && price <= upper);
     return trimmed.length ? trimmed : prices;
   }
+
+  summary() {
+    const categories = new Map();
+    const currencies = new Map();
+    const cities = new Map();
+
+    for (const listing of this.history) {
+      increment(categories, listing.category ?? "unknown");
+      increment(currencies, listing.currency ?? "unknown");
+      if (listing.city) increment(cities, listing.city);
+    }
+
+    return {
+      listingCount: this.history.length,
+      minCohortSize: this.minCohortSize,
+      categories: mapToSortedObjects(categories),
+      currencies: mapToSortedObjects(currencies),
+      topCities: mapToSortedObjects(cities).slice(0, 10)
+    };
+  }
 }
 
 export function round2(value) {
@@ -157,4 +177,14 @@ export function round2(value) {
 
 function listingId(listing) {
   return listing.listingId ?? listing.listing_id ?? null;
+}
+
+function increment(map, key) {
+  map.set(key, (map.get(key) ?? 0) + 1);
+}
+
+function mapToSortedObjects(map) {
+  return [...map.entries()]
+    .map(([key, count]) => ({ key, count }))
+    .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
 }

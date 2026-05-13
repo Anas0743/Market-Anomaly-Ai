@@ -1,16 +1,39 @@
 import http from "node:http";
+import { timingSafeEqual, randomUUID } from "node:crypto";
 import { pathToFileURL, URL } from "node:url";
 
+import { getConfig } from "./config.js";
 import { AnomalyEngine } from "./engine.js";
-import { buildDemoHistory, iphoneDemoListing } from "./demoData.js";
+import { iphoneDemoListing } from "./demoData.js";
+import { loadMarketHistory } from "./historyStore.js";
+import { validateBatchInput, validateListingInput, ValidationError } from "./validation.js";
 
-export function createServer(engine = new AnomalyEngine(buildDemoHistory())) {
+export function createServer(options = {}) {
+  if (typeof options?.validate === "function") {
+    options = { engine: options };
+  }
+
+  const config = options.config ?? getConfig();
+  const startedAt = new Date().toISOString();
+  const historyState = options.historyState ?? (options.engine ? null : loadMarketHistory(config.marketDataFile));
+  const engine =
+    options.engine ?? new AnomalyEngine(historyState.listings, { minCohortSize: config.minCohortSize });
+  const historyMeta =
+    historyState ?? {
+      source: "custom-engine",
+      loadedAt: startedAt,
+      count: getMarketSummary(engine).listingCount ?? null
+    };
+
   return http.createServer(async (request, response) => {
+    const requestId = headerValue(request.headers["x-request-id"]) || randomUUID();
+
     try {
+      response.setHeader("X-Request-Id", requestId);
       response.setHeader("Content-Type", "application/json; charset=utf-8");
-      response.setHeader("Access-Control-Allow-Origin", "*");
+      response.setHeader("Access-Control-Allow-Origin", config.corsOrigin);
       response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-      response.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      response.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, X-Request-Id");
 
       if (request.method === "OPTIONS") {
         response.writeHead(204);
@@ -18,7 +41,11 @@ export function createServer(engine = new AnomalyEngine(buildDemoHistory())) {
         return;
       }
 
-      const url = new URL(request.url, `http://${request.headers.host}`);
+      const url = new URL(request.url, `http://${request.headers.host ?? "localhost"}`);
+
+      if (requiresApiKey(url) && !isAuthorized(request, config.apiKey)) {
+        throw new ApiError(401, "unauthorized", "A valid API key is required.");
+      }
 
       if (request.method === "GET" && url.pathname === "/") {
         writeHtml(response, 200, rootConsoleHtml());
@@ -26,7 +53,42 @@ export function createServer(engine = new AnomalyEngine(buildDemoHistory())) {
       }
 
       if (request.method === "GET" && url.pathname === "/health") {
-        writeJson(response, 200, { status: "ok", service: "market-anomaly-ai" });
+        writeJson(response, 200, {
+          status: "ok",
+          service: "market-anomaly-ai",
+          startedAt
+        });
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/ready") {
+        writeJson(response, 200, {
+          status: "ready",
+          service: "market-anomaly-ai",
+          modelVersion: getModelVersion(engine),
+          history: historyMeta,
+          apiKeyRequired: Boolean(config.apiKey)
+        });
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/openapi.json") {
+        writeJson(response, 200, openApiSpec(config));
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/v1/market-summary") {
+        writeJson(response, 200, {
+          ...getMarketSummary(engine),
+          history: historyMeta
+        });
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/v1/categories") {
+        writeJson(response, 200, {
+          categories: getMarketSummary(engine).categories
+        });
         return;
       }
 
@@ -37,26 +99,34 @@ export function createServer(engine = new AnomalyEngine(buildDemoHistory())) {
       }
 
       if (request.method === "POST" && url.pathname === "/v1/validate") {
-        const body = await readJson(request);
-        validateRequest(body);
-        writeJson(response, 200, engine.validate(body));
+        const body = await readJson(request, config.requestMaxBytes);
+        const listing = validateListingInput(body);
+        writeJson(response, 200, engine.validate(listing));
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/v1/validate/batch") {
+        const body = await readJson(request, config.requestMaxBytes);
+        const listings = validateBatchInput(body, config.batchLimit);
+        writeJson(response, 200, {
+          count: listings.length,
+          modelVersion: getModelVersion(engine),
+          results: listings.map((listing) => engine.validate(listing))
+        });
         return;
       }
 
       writeJson(response, 404, { error: "not_found" });
     } catch (error) {
-      writeJson(response, 400, {
-        error: "bad_request",
-        message: error instanceof Error ? error.message : "Unknown error"
-      });
+      writeError(response, error, requestId);
     }
   });
 }
 
 if (isDirectRun()) {
-  const port = Number(process.env.PORT ?? 3000);
-  createServer().listen(port, () => {
-    console.log(`Market Anomaly AI API listening on http://localhost:${port}`);
+  const config = getConfig();
+  createServer({ config }).listen(config.port, () => {
+    console.log(`Market Anomaly AI API listening on http://localhost:${config.port}`);
   });
 }
 
@@ -74,34 +144,145 @@ function writeHtml(response, statusCode, html) {
   response.end(html);
 }
 
-function readJson(request) {
+class ApiError extends Error {
+  constructor(statusCode, code, message, details = []) {
+    super(message);
+    this.name = "ApiError";
+    this.statusCode = statusCode;
+    this.code = code;
+    this.details = details;
+  }
+}
+
+function readJson(request, maxBytes) {
   return new Promise((resolve, reject) => {
     let raw = "";
+    let rejected = false;
     request.on("data", (chunk) => {
+      if (rejected) return;
       raw += chunk;
-      if (raw.length > 1_000_000) {
-        reject(new Error("Request body too large"));
+      if (Buffer.byteLength(raw) > maxBytes) {
+        rejected = true;
+        reject(new ApiError(413, "request_too_large", "Request body is too large."));
         request.destroy();
       }
     });
     request.on("end", () => {
+      if (rejected) return;
       try {
         resolve(raw ? JSON.parse(raw) : {});
       } catch {
-        reject(new Error("Invalid JSON body"));
+        reject(new ApiError(400, "invalid_json", "Invalid JSON body."));
       }
     });
     request.on("error", reject);
   });
 }
 
-function validateRequest(body) {
-  if (!body || typeof body !== "object") throw new Error("Body must be a JSON object");
-  if (!body.listingId && !body.listing_id) throw new Error("listingId is required");
-  if (!body.category) throw new Error("category is required");
-  if (!Number.isFinite(Number(body.price)) || Number(body.price) <= 0) {
-    throw new Error("price must be a positive number");
+function writeError(response, error, requestId) {
+  const isKnown = error instanceof ApiError || error instanceof ValidationError;
+  const statusCode = isKnown ? error.statusCode : 500;
+  const payload = {
+    error: isKnown ? error.code : "internal_error",
+    message: isKnown ? error.message : "Unexpected server error.",
+    requestId
+  };
+
+  if (isKnown && error.details?.length) {
+    payload.details = error.details;
   }
+
+  writeJson(response, statusCode, payload);
+}
+
+function requiresApiKey(url) {
+  return url.pathname.startsWith("/v1/");
+}
+
+function isAuthorized(request, apiKey) {
+  if (!apiKey) return true;
+  const apiKeyHeader = headerValue(request.headers["x-api-key"]);
+  const authHeader = headerValue(request.headers.authorization);
+  const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : null;
+  return safeEqual(apiKeyHeader, apiKey) || safeEqual(bearerToken, apiKey);
+}
+
+function safeEqual(received, expected) {
+  if (!received || !expected) return false;
+  const receivedBuffer = Buffer.from(String(received));
+  const expectedBuffer = Buffer.from(String(expected));
+  if (receivedBuffer.length !== expectedBuffer.length) return false;
+  return timingSafeEqual(receivedBuffer, expectedBuffer);
+}
+
+function headerValue(value) {
+  if (Array.isArray(value)) return value[0];
+  return value ?? null;
+}
+
+function getMarketSummary(engine) {
+  if (typeof engine.marketSummary === "function") return engine.marketSummary();
+  return {
+    modelVersion: getModelVersion(engine),
+    listingCount: null,
+    categories: [],
+    currencies: [],
+    topCities: []
+  };
+}
+
+function getModelVersion(engine) {
+  return engine.modelVersion ?? "custom";
+}
+
+function openApiSpec(config) {
+  const security = config.apiKey ? [{ ApiKeyAuth: [] }] : [];
+  return {
+    openapi: "3.0.3",
+    info: {
+      title: "Market Anomaly AI API",
+      version: "0.2.0"
+    },
+    paths: {
+      "/health": { get: { summary: "Liveness check" } },
+      "/ready": { get: { summary: "Readiness and loaded market data metadata" } },
+      "/v1/validate": {
+        post: {
+          summary: "Validate a single marketplace listing",
+          security,
+          responses: {
+            200: { description: "Validation result" },
+            422: { description: "Invalid listing input" }
+          }
+        }
+      },
+      "/v1/validate/batch": {
+        post: {
+          summary: "Validate multiple marketplace listings",
+          security,
+          responses: {
+            200: { description: "Batch validation results" },
+            422: { description: "Invalid batch input" }
+          }
+        }
+      },
+      "/v1/market-summary": {
+        get: {
+          summary: "Loaded market data summary",
+          security
+        }
+      }
+    },
+    components: {
+      securitySchemes: {
+        ApiKeyAuth: {
+          type: "apiKey",
+          in: "header",
+          name: "X-API-Key"
+        }
+      }
+    }
+  };
 }
 
 function rootConsoleHtml() {

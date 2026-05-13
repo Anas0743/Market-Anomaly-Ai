@@ -26,6 +26,13 @@ npm start
 
 On Windows PowerShell, if script execution blocks `npm.ps1`, use `npm.cmd test`, `npm.cmd run demo`, and `npm.cmd start`.
 
+CLI with custom data:
+
+```powershell
+npm.cmd run demo -- --history data/market-history.example.json --price 700
+npm.cmd run demo -- --history data/market-history.example.json --listing examples/listing.example.json
+```
+
 ## Run With Docker
 
 Install Docker Desktop, then run the app from the project folder:
@@ -49,15 +56,82 @@ docker build -t market-anomaly-ai .
 docker run --rm -p 3000:3000 market-anomaly-ai
 ```
 
+## Use Real Market Data
+
+The API can load your own historical marketplace listings from JSON or JSONL:
+
+```powershell
+$env:MARKET_DATA_FILE="C:\path\to\market-history.json"
+npm.cmd start
+```
+
+With Docker:
+
+```powershell
+docker run --rm -p 3000:3000 `
+  -e MARKET_DATA_FILE=/data/market-history.example.json `
+  -v "${PWD}\data:/data:ro" `
+  market-anomaly-ai
+```
+
+Market history can be either a JSON array or an object with a `listings` array. Each listing should include at least:
+
+```json
+{
+  "listingId": "hist-001",
+  "category": "phone",
+  "brand": "Apple",
+  "model": "iPhone 13",
+  "condition": "used_excellent",
+  "city": "Amman",
+  "currency": "JOD",
+  "price": 255,
+  "title": "iPhone 13 128GB used excellent condition"
+}
+```
+
+See [data/market-history.example.json](data/market-history.example.json) and [docs/REAL_WORLD_SETUP.md](docs/REAL_WORLD_SETUP.md).
+
+## Production Configuration
+
+Optional environment variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `3000` | HTTP server port. |
+| `MARKET_DATA_FILE` | built-in demo data | JSON or JSONL history file. |
+| `API_KEY` | none | Protects `/v1/*` endpoints when set. |
+| `CORS_ORIGIN` | `*` | Allowed browser origin. |
+| `MIN_COHORT_SIZE` | `6` | Minimum comparable listings before fallback. |
+| `BATCH_LIMIT` | `100` | Maximum listings in one batch request. |
+| `REQUEST_MAX_BYTES` | `1000000` | Maximum JSON request body size. |
+
 ## API
 
 ```http
 POST /v1/validate
+POST /v1/validate/batch
+GET /v1/market-summary
+GET /v1/categories
 GET /v1/demo/iphone-13
 GET /health
+GET /ready
+GET /openapi.json
 ```
 
 Default local URL: `http://localhost:3000`.
+
+If `API_KEY` is set, call protected endpoints with either:
+
+```http
+X-API-Key: your-secret-key
+```
+
+or:
+
+```http
+Authorization: Bearer your-secret-key
+```
 
 ## Upload To GitHub
 

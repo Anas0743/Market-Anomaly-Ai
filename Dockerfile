@@ -7,6 +7,7 @@ ENV PORT=3000
 
 COPY --chown=node:node package.json ./
 COPY --chown=node:node src ./src
+COPY --chown=node:node data ./data
 
 USER node
 

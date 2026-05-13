@@ -1,6 +1,8 @@
 import { enrichListing, PriceRangeEstimator } from "./pricing.js";
 import { FraudRiskModel } from "./risk.js";
 
+export const MODEL_VERSION = "robust-file-backed-v0.2";
+
 const thresholds = {
   phone: { under: -22, over: 25 },
   phones: { under: -22, over: 25 },
@@ -14,6 +16,7 @@ const thresholds = {
 
 export class AnomalyEngine {
   constructor(history, options = {}) {
+    this.modelVersion = options.modelVersion ?? MODEL_VERSION;
     this.estimator = new PriceRangeEstimator(history, options);
     this.riskModel = new FraudRiskModel();
   }
@@ -45,7 +48,14 @@ export class AnomalyEngine {
       },
       reasons: reasons(enriched, classification, priceRange, deltaVsMedianPct),
       cohort: priceRange,
-      modelVersion: "mvp-robust-v0.1"
+      modelVersion: this.modelVersion
+    };
+  }
+
+  marketSummary() {
+    return {
+      modelVersion: this.modelVersion,
+      ...this.estimator.summary()
     };
   }
 
@@ -109,4 +119,3 @@ function reasons(listing, classification, priceRange, deltaVsMedianPct) {
 function round2(value) {
   return Math.round(value * 100) / 100;
 }
-

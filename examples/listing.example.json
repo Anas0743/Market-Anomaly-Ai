@@ -1,0 +1,19 @@
+{
+  "listingId": "live-phone-001",
+  "category": "phone",
+  "brand": "Apple",
+  "model": "iPhone 13",
+  "storageGb": 128,
+  "condition": "used_excellent",
+  "city": "Amman",
+  "currency": "JOD",
+  "price": 700,
+  "title": "iPhone 13 128GB used excellent condition",
+  "description": "Original battery, no repairs.",
+  "sellerVerified": true,
+  "sellerAccountAgeDays": 420,
+  "attributes": {
+    "duplicateImageCount": 0,
+    "sellerListingCount24h": 1
+  }
+}

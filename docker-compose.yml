@@ -6,4 +6,7 @@ services:
       - "3000:3000"
     environment:
       PORT: "3000"
+      MARKET_DATA_FILE: "/data/market-history.example.json"
+    volumes:
+      - ./data:/data:ro
     restart: unless-stopped
