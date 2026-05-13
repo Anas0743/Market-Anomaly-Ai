@@ -1,0 +1,16 @@
+{
+  "name": "market-anomaly-ai",
+  "version": "0.1.0",
+  "description": "Market Anomaly AI - Intelligent Price Validation Engine",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "demo": "node src/cli.js",
+    "start": "node src/api.js",
+    "test": "node --test"
+  },
+  "license": "UNLICENSED"
+}
+

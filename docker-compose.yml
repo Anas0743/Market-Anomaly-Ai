@@ -1,0 +1,9 @@
+services:
+  market-anomaly-ai:
+    build: .
+    image: market-anomaly-ai:latest
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+    restart: unless-stopped
